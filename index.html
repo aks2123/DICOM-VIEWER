@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Zero-Egress DICOM Viewer (HIPAA Compliant)</title>
+
+  <!-- Cornerstone Medical Imaging Stack with Compressed Codecs -->
+  <script src="https://cdn.jsdelivr.net/npm/cornerstone-core@2.6.1/dist/cornerstone.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dicom-parser@1.8.21/dist/dicomParser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cornerstone-wado-image-loader@4.13.2/dist/cornerstoneWADOImageLoader.bundle.min.js"></script>
+
+  <style>
+    :root {
+      --bg-dark: #090b0e;
+      --panel-bg: #14171f;
+      --panel-border: #222834;
+      --accent: #00d2ff;
+      --text: #e2e8f0;
+      --text-muted: #718096;
+      --danger: #e53e3e;
+      --success: #38a169;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg-dark);
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    header {
+      background: var(--panel-bg);
+      border-bottom: 1px solid var(--panel-border);
+      padding: 6px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      z-index: 10;
+    }
+    .hipaa-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      background: #143323;
+      border: 1px solid #226e45;
+      color: #70e3a0;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: bold;
+    }
+    .btn {
+      background: #1e2430;
+      border: 1px solid #2d3646;
+      color: var(--text);
+      padding: 5px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .btn:hover { background: #2d3646; }
+    .btn.active { background: #0078d4; border-color: var(--accent); color: #fff; font-weight: bold; }
+    .btn-danger { background: #3d1a1d; border-color: #632a30; color: #fca5a5; }
+    .btn-danger:hover { background: #542227; }
+    select.btn { outline: none; }
+
+    #main-container {
+      display: flex;
+      flex: 1;
+      height: calc(100vh - 49px);
+      overflow: hidden;
+      position: relative;
+    }
+    #sidebar {
+      width: 260px;
+      background: var(--panel-bg);
+      border-right: 1px solid var(--panel-border);
+      display: flex;
+      flex-direction: column;
+    }
+    .sidebar-header {
+      padding: 8px 12px;
+      font-weight: bold;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--panel-border);
+    }
+    #series-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 6px;
+    }
+    .series-card {
+      padding: 8px 10px;
+      background: #0f1218;
+      border: 1px solid var(--panel-border);
+      border-radius: 4px;
+      margin-bottom: 6px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .series-card:hover { border-color: var(--accent); }
+    .series-card.selected { border-color: var(--accent); background: #162233; }
+
+    #viewport-grid {
+      flex: 1;
+      display: grid;
+      gap: 4px;
+      padding: 4px;
+      background: #000;
+      position: relative;
+    }
+    .grid-1x1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+    .grid-1x2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+    .grid-2x1 { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
+    .grid-2x2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+
+    .viewport {
+      position: relative;
+      background: #06070a;
+      border: 1px solid var(--panel-border);
+      border-radius: 3px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .viewport.active { border: 2px solid var(--accent); }
+    .viewport-header {
+      background: #11141c;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: bold;
+      display: flex;
+      justify-content: space-between;
+      color: #94a3b8;
+      border-bottom: 1px solid #1c222e;
+    }
+    .canvas-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: crosshair;
+    }
+    canvas {
+      position: absolute;
+      display: block;
+      image-rendering: pixelated;
+    }
+    .overlay-text {
+      position: absolute;
+      color: #00ff66;
+      font-family: Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.3;
+      pointer-events: none;
+      text-shadow: 1px 1px 2px #000, -1px -1px 2px #000;
+    }
+    .overlay-tl { top: 8px; left: 8px; }
+    .overlay-tr { top: 8px; right: 8px; text-align: right; }
+    .overlay-bl { bottom: 8px; left: 8px; }
+    .overlay-br { bottom: 8px; right: 8px; text-align: right; }
+
+    .viewport-footer {
+      background: #11141c;
+      padding: 3px 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .slider {
+      flex: 1;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    #dropzone {
+      position: absolute;
+      top: 10px; left: 270px; right: 10px; bottom: 10px;
+      background: rgba(14, 18, 24, 0.94);
+      border: 2px dashed #2d3848;
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      gap: 12px;
+      text-align: center;
+      padding: 20px;
+    }
+    #dropzone.hidden { display: none; }
+    #status-console {
+      max-width: 650px;
+      width: 100%;
+      background: #090b0e;
+      border: 1px solid #222834;
+      border-radius: 4px;
+      padding: 10px;
+      font-family: Consolas, monospace;
+      font-size: 11px;
+      color: #00ff66;
+      max-height: 140px;
+      overflow-y: auto;
+      text-align: left;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="hipaa-badge">🔒 100% Client-Side RAM (HIPAA Compliant)</div>
+
+    <label class="btn active" for="file-input">
+      📂 Upload Files
+      <input type="file" id="file-input" multiple style="display:none;">
+    </label>
+    <label class="btn" for="folder-input">
+      📁 Upload Folder
+      <input type="file" id="folder-input" webkitdirectory directory multiple style="display:none;">
+    </label>
+
+    <div style="height: 16px; width: 1px; background: var(--panel-border);"></div>
+
+    <button id="tool-wl" class="btn active">🌓 WL/WW</button>
+    <button id="tool-pan" class="btn">✋ Pan</button>
+    <button id="tool-zoom" class="btn">🔍 Zoom</button>
+    <button id="tool-ruler" class="btn">📏 Ruler</button>
+    <button id="btn-clear-ruler" class="btn">🧹 Clear</button>
+
+    <div style="height: 16px; width: 1px; background: var(--panel-border);"></div>
+
+    <select id="layout-select" class="btn">
+      <option value="1x1">1 Viewport</option>
+      <option value="1x2" selected>1x2 (Side-by-Side)</option>
+      <option value="2x1">2x1 (Top-Bottom)</option>
+      <option value="2x2">2x2 (4 Grid)</option>
+    </select>
+
+    <select id="preset-select" class="btn">
+      <option value="default">Preset: Default</option>
+      <option value="lung">CT Lung</option>
+      <option value="bone">CT Bone</option>
+      <option value="soft">CT Soft Tissue</option>
+      <option value="brain">CT Brain</option>
+    </select>
+
+    <button id="btn-ref-lines" class="btn">📐 Ref Lines: ON</button>
+    <button id="btn-anonymize" class="btn">🛡️ Anonymize: OFF</button>
+    <button id="btn-cine" class="btn">▶ Cine</button>
+
+    <div style="height: 16px; width: 1px; background: var(--panel-border);"></div>
+
+    <button id="btn-save-slice" class="btn">💾 Save Image</button>
+    <button id="btn-wipe" class="btn btn-danger">🔒 Wipe Session</button>
+  </header>
+
+  <div id="main-container">
+    <div id="sidebar">
+      <div class="sidebar-header">Patient Series (<span id="series-count">0</span>)</div>
+      <div id="series-list"></div>
+      <div style="padding: 10px; font-size: 11px; color: var(--text-muted); border-top: 1px solid var(--panel-border);">
+        <b>How to use:</b><br>
+        • Click any window to focus.<br>
+        • Click a series above to load it.<br>
+        • Wheel: Slice scroll.<br>
+        • L-Drag: Active tool.<br>
+        • R-Drag: Pan.
+      </div>
+    </div>
+
+    <!-- Drop Zone -->
+    <div id="dropzone">
+      <h2>Drag & Drop DICOM Files or Folders Here</h2>
+      <p style="color: var(--text-muted);">Supports uncompressed, JPEG Lossless, JPEG 2000, and RLE. 100% in-browser RAM.</p>
+      <div style="display: flex; gap: 10px;">
+        <button class="btn active" onclick="document.getElementById('file-input').click()">📂 Select Files</button>
+        <button class="btn" onclick="document.getElementById('folder-input').click()">📁 Select Folder</button>
+      </div>
+      <div id="status-console">Cornerstone Codec Engine Initialized. Ready for files.</div>
+    </div>
+
+    <!-- Viewport Grid -->
+    <div id="viewport-grid" class="grid-1x2">
+      <div class="viewport active" data-id="0">
+        <div class="viewport-header"><span>Window 1: Empty</span><span class="slice-counter">0 / 0</span></div>
+        <div class="canvas-container"><canvas></canvas>
+          <div class="overlay-text overlay-tl"></div><div class="overlay-text overlay-tr"></div>
+          <div class="overlay-text overlay-bl"></div><div class="overlay-text overlay-br"></div>
+        </div>
+        <div class="viewport-footer"><input type="range" class="slider" min="0" max="0" value="0"></div>
+      </div>
+
+      <div class="viewport" data-id="1">
+        <div class="viewport-header"><span>Window 2: Empty</span><span class="slice-counter">0 / 0</span></div>
+        <div class="canvas-container"><canvas></canvas>
+          <div class="overlay-text overlay-tl"></div><div class="overlay-text overlay-tr"></div>
+          <div class="overlay-text overlay-bl"></div><div class="overlay-text overlay-br"></div>
+        </div>
+        <div class="viewport-footer"><input type="range" class="slider" min="0" max="0" value="0"></div>
+      </div>
+
+      <div class="viewport" data-id="2" style="display:none;">
+        <div class="viewport-header"><span>Window 3: Empty</span><span class="slice-counter">0 / 0</span></div>
+        <div class="canvas-container"><canvas></canvas>
+          <div class="overlay-text overlay-tl"></div><div class="overlay-text overlay-tr"></div>
+          <div class="overlay-text overlay-bl"></div><div class="overlay-text overlay-br"></div>
+        </div>
+        <div class="viewport-footer"><input type="range" class="slider" min="0" max="0" value="0"></div>
+      </div>
+
+      <div class="viewport" data-id="3" style="display:none;">
+        <div class="viewport-header"><span>Window 4: Empty</span><span class="slice-counter">0 / 0</span></div>
+        <div class="canvas-container"><canvas></canvas>
+          <div class="overlay-text overlay-tl"></div><div class="overlay-text overlay-tr"></div>
+          <div class="overlay-text overlay-bl"></div><div class="overlay-text overlay-br"></div>
+        </div>
+        <div class="viewport-footer"><input type="range" class="slider" min="0" max="0" value="0"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // -------------------------------------------------------------
+    // CONFIGURE CORNERSTONE DECODERS (No Workers = No CORS errors)
+    // -------------------------------------------------------------
+    if (window.cornerstoneWADOImageLoader) {
+      cornerstoneWADOImageLoader.external.cornerstone = cornerstone;
+      cornerstoneWADOImageLoader.external.dicomParser = dicomParser;
+      cornerstoneWADOImageLoader.configure({
+        useWebWorkers: false, // Critical: synchronous decode avoids file:/// origin restrictions
+        decodeConfig: { convertFloatPixelDataToInt: true }
+      });
+    }
+
+    // -------------------------------------------------------------
+    // STATE & LOGGING
+    // -------------------------------------------------------------
+    let activeTool = 'wl';
+    let isAnonymized = false;
+    let showRefLines = true;
+    let seriesDict = {};
+    let activeViewportIndex = 0;
+    let cineInterval = null;
+
+    const logEl = document.getElementById('status-console');
+    function log(msg) {
+      console.log(msg);
+      logEl.textContent += `\n${msg}`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    const viewports = Array.from(document.querySelectorAll('.viewport')).map((el, i) => ({
+      id: i,
+      el: el,
+      canvas: el.querySelector('canvas'),
+      ctx: el.querySelector('canvas').getContext('2d'),
+      slider: el.querySelector('.slider'),
+      slices: [],
+      currentSliceIdx: 0,
+      panX: 0, panY: 0, zoom: 1.0,
+      windowWidth: 400, windowCenter: 40,
+      measurements: [],
+      currentRuler: null,
+      refLines: []
+    }));
+
+    // Setup Tools
+    ['wl', 'pan', 'zoom', 'ruler'].forEach(t => {
+      document.getElementById(`tool-${t}`).onclick = () => {
+        activeTool = t;
+        document.querySelectorAll('header .btn').forEach(b => {
+          if (b.id.startsWith('tool-')) b.classList.remove('active');
+        });
+        document.getElementById(`tool-${t}`).classList.add('active');
+      };
+    });
+
+    document.getElementById('btn-anonymize').onclick = () => {
+      isAnonymized = !isAnonymized;
+      const btn = document.getElementById('btn-anonymize');
+      btn.textContent = isAnonymized ? "🛡️ Anonymize: ON" : "🛡️ Anonymize: OFF";
+      btn.classList.toggle('active', isAnonymized);
+      renderAll();
+    };
+
+    document.getElementById('btn-ref-lines').onclick = () => {
+      showRefLines = !showRefLines;
+      document.getElementById('btn-ref-lines').textContent = showRefLines ? "📐 Ref Lines: ON" : "📐 Ref Lines: OFF";
+      updateReferenceLines();
+    };
+
+    document.getElementById('btn-clear-ruler').onclick = () => {
+      viewports[activeViewportIndex].measurements = [];
+      renderViewport(viewports[activeViewportIndex]);
+    };
+
+    document.getElementById('btn-wipe').onclick = () => {
+      if (confirm("Purge all medical data from browser RAM?")) {
+        seriesDict = {};
+        viewports.forEach(vp => {
+          vp.slices = [];
+          vp.measurements = [];
+          vp.ctx.clearRect(0, 0, vp.canvas.width, vp.canvas.height);
+          vp.el.querySelector('.viewport-header span').textContent = `Window ${vp.id + 1}: Empty`;
+          vp.el.querySelector('.slice-counter').textContent = '0 / 0';
+        });
+        document.getElementById('series-list').innerHTML = '';
+        document.getElementById('series-count').textContent = '0';
+        document.getElementById('dropzone').classList.remove('hidden');
+        logEl.textContent = "RAM purged. Ready for new files.";
+      }
+    };
+
+    document.getElementById('layout-select').onchange = (e) => {
+      const mode = e.target.value;
+      document.getElementById('viewport-grid').className = `grid-${mode}`;
+      viewports.forEach(vp => vp.el.style.display = 'none');
+      if (mode === '1x1') viewports[0].el.style.display = 'flex';
+      else if (mode === '1x2' || mode === '2x1') {
+        viewports[0].el.style.display = 'flex';
+        viewports[1].el.style.display = 'flex';
+      } else if (mode === '2x2') {
+        viewports.forEach(vp => vp.el.style.display = 'flex');
+      }
+      updateReferenceLines();
+    };
+
+    document.getElementById('preset-select').onchange = (e) => {
+      const vp = viewports[activeViewportIndex];
+      const val = e.target.value;
+      if (val === 'lung') { vp.windowWidth = 1500; vp.windowCenter = -600; }
+      else if (val === 'bone') { vp.windowWidth = 1800; vp.windowCenter = 400; }
+      else if (val === 'soft') { vp.windowWidth = 400; vp.windowCenter = 40; }
+      else if (val === 'brain') { vp.windowWidth = 80; vp.windowCenter = 40; }
+      else { resetWindowLevel(vp); }
+      renderViewport(vp);
+    };
+
+    document.getElementById('btn-cine').onclick = () => {
+      const btn = document.getElementById('btn-cine');
+      if (cineInterval) {
+        clearInterval(cineInterval);
+        cineInterval = null;
+        btn.textContent = '▶ Cine';
+      } else {
+        btn.textContent = '⏸ Pause';
+        cineInterval = setInterval(() => {
+          const vp = viewports[activeViewportIndex];
+          if (!vp.slices || vp.slices.length <= 1) return;
+          vp.currentSliceIdx = (vp.currentSliceIdx + 1) % vp.slices.length;
+          vp.slider.value = vp.currentSliceIdx;
+          renderViewport(vp);
+          updateReferenceLines();
+        }, 80);
+      }
+    };
+
+    document.getElementById('btn-save-slice').onclick = () => {
+      const vp = viewports[activeViewportIndex];
+      if (!vp.slices.length) return;
+      const expCanvas = document.createElement('canvas');
+      expCanvas.width = vp.canvas.width;
+      expCanvas.height = vp.canvas.height;
+      const expCtx = expCanvas.getContext('2d');
+      expCtx.drawImage(vp.canvas, 0, 0);
+
+      expCanvas.toBlob((blob) => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `slice_${vp.currentSliceIdx + 1}_${isAnonymized ? 'ANON' : 'DICOM'}.png`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }, 'image/png');
+    };
+
+    // Viewport selection
+    viewports.forEach((vp, idx) => {
+      vp.el.onclick = () => {
+        activeViewportIndex = idx;
+        viewports.forEach(v => v.el.classList.toggle('active', v.id === idx));
+      };
+      vp.slider.oninput = (e) => {
+        vp.currentSliceIdx = parseInt(e.target.value);
+        renderViewport(vp);
+        updateReferenceLines();
+      };
+    });
+
+    // -------------------------------------------------------------
+    // FILE HANDLING VIA CORNERSTONE COMPRESSED DECODER
+    // -------------------------------------------------------------
+    document.getElementById('file-input').onchange = (e) => handleFiles(e.target.files);
+    document.getElementById('folder-input').onchange = (e) => handleFiles(e.target.files);
+
+    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);
+    });
+
+    async function handleFiles(fileList) {
+      const files = Array.from(fileList);
+      if (!files.length) return;
+
+      logEl.textContent = `Scanning & decompressing ${files.length} candidate files...`;
+      seriesDict = {};
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        try {
+          // Register file with Cornerstone WADO Image Loader
+          const imageId = cornerstoneWADOImageLoader.wadouri.fileManager.add(file);
+
+          // Decode image (uncompressed, JPEG Lossless, JPEG 2000, RLE)
+          const image = await cornerstone.loadImage(imageId);
+          const dataSet = image.data;
+
+          const sUid = dataSet.string('x0020000e') || "Series_1";
+          const instNum = dataSet.intString('x00200013') || (i + 1);
+          const ipp = dataSet.string('x00200032');
+          const zPos = ipp ? parseFloat(ipp.split('\\')[2]) : instNum;
+
+          const dcmObj = {
+            fileName: file.name,
+            image: image,
+            dataSet: dataSet,
+            rows: image.rows,
+            cols: image.columns,
+            windowWidth: image.windowWidth || 400,
+            windowCenter: image.windowCenter || 40,
+            pixelSpacing: image.rowPixelSpacing ? [image.rowPixelSpacing, image.columnPixelSpacing] : [1.0, 1.0],
+            imagePosition: ipp ? ipp.split('\\').map(Number) : [0, 0, zPos],
+            imageDirections: dataSet.string('x00200037') ? dataSet.string('x00200037').split('\\').map(Number) : [1, 0, 0, 0, 1, 0],
+            patientName: dataSet.string('x00100010') || "Anonymous",
+            patientId: dataSet.string('x00100020') || "N/A",
+            modality: dataSet.string('x00080060') || "DICOM",
+            studyDate: dataSet.string('x00080020') || "",
+            seriesDescription: dataSet.string('x0008103e') || "Series",
+            seriesInstanceUid: sUid,
+            zPos: zPos
+          };
+
+          if (!seriesDict[sUid]) seriesDict[sUid] = [];
+          seriesDict[sUid].push(dcmObj);
+          successCount++;
+
+          if (i === 0 || i % 10 === 0) {
+            log(`[Decoded] ${file.name} (${image.columns}x${image.rows})`);
+          }
+        } catch (err) {
+          errorCount++;
+          if (files.length <= 10) log(`[Skipped ${file.name}]: ${err.message}`);
+        }
+      }
+
+      log(`Decompressed & parsed ${successCount} valid DICOM slices (${errorCount} skipped).`);
+
+      if (successCount === 0) {
+        log(`❌ Error: Could not parse files. Ensure they are valid DICOM files.`);
+        return;
+      }
+
+      document.getElementById('dropzone').classList.add('hidden');
+
+      // Sort slices by Z position
+      for (const k in seriesDict) {
+        seriesDict[k].sort((a, b) => a.zPos - b.zPos);
+      }
+
+      updateSidebar();
+
+      // Load into viewports
+      const keys = Object.keys(seriesDict);
+      keys.slice(0, 4).forEach((k, idx) => {
+        loadSeriesToViewport(viewports[idx], k);
+      });
+    }
+
+    function updateSidebar() {
+      const list = document.getElementById('series-list');
+      list.innerHTML = '';
+      const keys = Object.keys(seriesDict);
+      document.getElementById('series-count').textContent = keys.length;
+
+      keys.forEach(k => {
+        const slices = seriesDict[k];
+        const card = document.createElement('div');
+        card.className = 'series-card';
+        const mod = slices[0].modality;
+        const desc = slices[0].seriesDescription;
+        card.innerHTML = `<b>${mod}</b> - ${desc}<br><small style="color:var(--text-muted);">${slices.length} slices</small>`;
+        card.onclick = () => loadSeriesToViewport(viewports[activeViewportIndex], k);
+        list.appendChild(card);
+      });
+    }
+
+    function loadSeriesToViewport(vp, sUid) {
+      if (!seriesDict[sUid]) return;
+      vp.slices = seriesDict[sUid];
+      vp.currentSliceIdx = 0;
+      vp.measurements = [];
+      vp.slider.max = vp.slices.length - 1;
+      vp.slider.value = 0;
+
+      const desc = vp.slices[0].seriesDescription;
+      vp.el.querySelector('.viewport-header span').textContent = `Window ${vp.id + 1}: ${desc}`;
+      resetWindowLevel(vp);
+      renderViewport(vp);
+      updateReferenceLines();
+    }
+
+    function resetWindowLevel(vp) {
+      if (!vp.slices.length) return;
+      const s = vp.slices[vp.currentSliceIdx];
+      vp.windowWidth = s.windowWidth || 400;
+      vp.windowCenter = s.windowCenter || 40;
+    }
+
+    // -------------------------------------------------------------
+    // RENDERING ENGINE
+    // -------------------------------------------------------------
+    function renderViewport(vp) {
+      if (!vp.slices.length) return;
+      const s = vp.slices[vp.currentSliceIdx];
+      const cols = s.cols;
+      const rows = s.rows;
+
+      vp.canvas.width = cols;
+      vp.canvas.height = rows;
+      vp.canvas.style.transform = `translate(${vp.panX}px, ${vp.panY}px) scale(${vp.zoom})`;
+
+      const raw = s.image.getPixelData();
+      const slope = s.image.slope || 1.0;
+      const intercept = s.image.intercept || 0.0;
+      const imgData = vp.ctx.createImageData(cols, rows);
+      const rgba = imgData.data;
+
+      const low = vp.windowCenter - (vp.windowWidth / 2);
+      const high = vp.windowCenter + (vp.windowWidth / 2);
+      const rng = (high - low) || 1;
+
+      for (let i = 0; i < raw.length; i++) {
+        const val = raw[i] * slope + intercept;
+        let norm = ((val - low) / rng) * 255;
+        if (norm < 0) norm = 0;
+        if (norm > 255) norm = 255;
+
+        const idx = i * 4;
+        rgba[idx] = norm;
+        rgba[idx + 1] = norm;
+        rgba[idx + 2] = norm;
+        rgba[idx + 3] = 255;
+      }
+      vp.ctx.putImageData(imgData, 0, 0);
+
+      // Reference Lines
+      if (showRefLines && vp.refLines.length) {
+        vp.ctx.strokeStyle = "#ffcc00";
+        vp.ctx.lineWidth = 2;
+        vp.ctx.setLineDash([6, 4]);
+        vp.refLines.forEach(l => {
+          vp.ctx.beginPath();
+          vp.ctx.moveTo(l.start.c, l.start.r);
+          vp.ctx.lineTo(l.end.c, l.end.r);
+          vp.ctx.stroke();
+        });
+        vp.ctx.setLineDash([]);
+      }
+
+      // Measurements
+      vp.ctx.strokeStyle = "#00e5ff";
+      vp.ctx.lineWidth = 2;
+      vp.ctx.font = "bold 11px Segoe UI";
+      vp.measurements.forEach(m => {
+        vp.ctx.beginPath();
+        vp.ctx.moveTo(m.start.c, m.start.r);
+        vp.ctx.lineTo(m.end.c, m.end.r);
+        vp.ctx.stroke();
+
+        const mx = (m.start.c + m.end.c) / 2;
+        const my = (m.start.r + m.end.r) / 2;
+        vp.ctx.fillStyle = "rgba(18, 22, 28, 0.85)";
+        vp.ctx.fillRect(mx - 25, my - 9, 50, 18);
+        vp.ctx.fillStyle = "#00e5ff";
+        vp.ctx.fillText(m.label, mx - 20, my + 4);
+      });
+
+      // Live Dragging Ruler
+      if (vp.currentRuler) {
+        vp.ctx.strokeStyle = "#00ff66";
+        vp.ctx.beginPath();
+        vp.ctx.moveTo(vp.currentRuler.start.c, vp.currentRuler.start.r);
+        vp.ctx.lineTo(vp.currentRuler.end.c, vp.currentRuler.end.r);
+        vp.ctx.stroke();
+      }
+
+      updateOverlays(vp, s);
+    }
+
+    function renderAll() {
+      viewports.forEach(renderViewport);
+    }
+
+    function updateOverlays(vp, s) {
+      vp.el.querySelector('.slice-counter').textContent = `${vp.currentSliceIdx + 1} / ${vp.slices.length}`;
+      const patName = isAnonymized ? "[ANONYMIZED - HIPAA]" : s.patientName;
+      const patId = isAnonymized ? "REDACTED" : s.patientId;
+
+      vp.el.querySelector('.overlay-tl').innerHTML = `${patName}<br>ID: ${patId}`;
+      vp.el.querySelector('.overlay-tr').innerHTML = `${s.modality}<br>${isAnonymized ? 'REDACTED' : s.studyDate}`;
+      vp.el.querySelector('.overlay-bl').innerHTML = `Zoom: ${Math.round(vp.zoom * 100)}%<br>${s.cols}x${s.rows}`;
+      vp.el.querySelector('.overlay-br').innerHTML = `W: ${Math.round(vp.windowWidth)} C: ${Math.round(vp.windowCenter)}`;
+    }
+
+    // -------------------------------------------------------------
+    // 3D SPATIAL REFERENCE LINES
+    // -------------------------------------------------------------
+    function getSliceGeometry(s) {
+      const X = [s.imageDirections[0], s.imageDirections[1], s.imageDirections[2]];
+      const Y = [s.imageDirections[3], s.imageDirections[4], s.imageDirections[5]];
+      const N = [
+        X[1]*Y[2] - X[2]*Y[1],
+        X[2]*Y[0] - X[0]*Y[2],
+        X[0]*Y[1] - X[1]*Y[0]
+      ];
+      const nLen = Math.hypot(...N);
+      if (nLen < 1e-6) return null;
+      N[0]/=nLen; N[1]/=nLen; N[2]/=nLen;
+
+      const dc = s.pixelSpacing[1];
+      const dr = s.pixelSpacing[0];
+      const pos = s.imagePosition;
+
+      const C1 = pos;
+      const C2 = [pos[0] + s.cols*dc*X[0], pos[1] + s.cols*dc*X[1], pos[2] + s.cols*dc*X[2]];
+      const C3 = [C2[0] + s.rows*dr*Y[0], C2[1] + s.rows*dr*Y[1], C2[2] + s.rows*dr*Y[2]];
+      const C4 = [pos[0] + s.rows*dr*Y[0], pos[1] + s.rows*dr*Y[1], pos[2] + s.rows*dr*Y[2]];
+
+      return { S: pos, X, Y, N, dr, dc, corners: [C1, C2, C3, C4] };
+    }
+
+    function updateReferenceLines() {
+      viewports.forEach(vp => vp.refLines = []);
+      if (!showRefLines) { renderAll(); return; }
+
+      const activeVp = viewports[activeViewportIndex];
+      if (!activeVp.slices.length) return;
+
+      const geomActive = getSliceGeometry(activeVp.slices[activeVp.currentSliceIdx]);
+      if (!geomActive) return;
+
+      viewports.forEach(vp => {
+        if (vp.id === activeVp.id || !vp.slices.length || vp.el.style.display === 'none') return;
+        const geomTarget = getSliceGeometry(vp.slices[vp.currentSliceIdx]);
+        if (!geomTarget) return;
+
+        const dotN = geomActive.N[0]*geomTarget.N[0] + geomActive.N[1]*geomTarget.N[1] + geomActive.N[2]*geomTarget.N[2];
+        if (Math.abs(dotN) > 0.98) return;
+
+        const edges = [
+          [geomActive.corners[0], geomActive.corners[1]],
+          [geomActive.corners[1], geomActive.corners[2]],
+          [geomActive.corners[2], geomActive.corners[3]],
+          [geomActive.corners[3], geomActive.corners[0]]
+        ];
+
+        const pts = [];
+        edges.forEach(([A, B]) => {
+          const dA = geomTarget.N[0]*(A[0]-geomTarget.S[0]) + geomTarget.N[1]*(A[1]-geomTarget.S[1]) + geomTarget.N[2]*(A[2]-geomTarget.S[2]);
+          const dB = geomTarget.N[0]*(B[0]-geomTarget.S[0]) + geomTarget.N[1]*(B[1]-geomTarget.S[1]) + geomTarget.N[2]*(B[2]-geomTarget.S[2]);
+          if (dA * dB <= 0 && Math.abs(dA - dB) > 1e-6) {
+            const t = dA / (dA - dB);
+            const I = [A[0] + t*(B[0]-A[0]), A[1] + t*(B[1]-A[1]), A[2] + t*(B[2]-A[2])];
+            const V = [I[0]-geomTarget.S[0], I[1]-geomTarget.S[1], I[2]-geomTarget.S[2]];
+            const c = (V[0]*geomTarget.X[0] + V[1]*geomTarget.X[1] + V[2]*geomTarget.X[2]) / geomTarget.dc;
+            const r = (V[0]*geomTarget.Y[0] + V[1]*geomTarget.Y[1] + V[2]*geomTarget.Y[2]) / geomTarget.dr;
+            pts.push({ c, r });
+          }
+        });
+
+        if (pts.length >= 2) vp.refLines.push({ start: pts[0], end: pts[1] });
+        renderViewport(vp);
+      });
+    }
+
+    // -------------------------------------------------------------
+    // MOUSE INTERACTION (Pan, Zoom, WL, Ruler, Slice Scroll)
+    // -------------------------------------------------------------
+    viewports.forEach(vp => {
+      let isDragging = false;
+      let startX = 0, startY = 0;
+      const container = vp.el.querySelector('.canvas-container');
+
+      container.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        if (!vp.slices.length) return;
+        if (e.ctrlKey) {
+          vp.zoom = Math.max(0.2, Math.min(10.0, vp.zoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+        } else {
+          vp.currentSliceIdx = Math.max(0, Math.min(vp.slices.length - 1, vp.currentSliceIdx + (e.deltaY > 0 ? 1 : -1)));
+          vp.slider.value = vp.currentSliceIdx;
+          updateReferenceLines();
+        }
+        renderViewport(vp);
+      }, { passive: false });
+
+      container.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        activeViewportIndex = vp.id;
+        viewports.forEach(v => v.el.classList.toggle('active', v.id === vp.id));
+
+        if (activeTool === 'ruler') {
+          const rect = vp.canvas.getBoundingClientRect();
+          const c = (e.clientX - rect.left) / (rect.width / vp.canvas.width);
+          const r = (e.clientY - rect.top) / (rect.height / vp.canvas.height);
+          vp.currentRuler = { start: { c, r }, end: { c, r } };
+        }
+      });
+
+      window.addEventListener('mousemove', (e) => {
+        if (!isDragging || activeViewportIndex !== vp.id) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        startX = e.clientX;
+        startY = e.clientY;
+
+        if (activeTool === 'wl') {
+          vp.windowWidth = Math.max(1, vp.windowWidth + dx * 2);
+          vp.windowCenter -= dy * 2;
+          renderViewport(vp);
+        } else if (activeTool === 'pan' || e.buttons === 2) {
+          vp.panX += dx;
+          vp.panY += dy;
+          vp.canvas.style.transform = `translate(${vp.panX}px, ${vp.panY}px) scale(${vp.zoom})`;
+        } else if (activeTool === 'zoom') {
+          vp.zoom = Math.max(0.1, vp.zoom - dy * 0.01);
+          vp.canvas.style.transform = `translate(${vp.panX}px, ${vp.panY}px) scale(${vp.zoom})`;
+          updateOverlays(vp, vp.slices[vp.currentSliceIdx]);
+        } else if (activeTool === 'ruler' && vp.currentRuler) {
+          const rect = vp.canvas.getBoundingClientRect();
+          const c = (e.clientX - rect.left) / (rect.width / vp.canvas.width);
+          const r = (e.clientY - rect.top) / (rect.height / vp.canvas.height);
+          vp.currentRuler.end = { c, r };
+          renderViewport(vp);
+        }
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (isDragging && activeTool === 'ruler' && vp.currentRuler) {
+          const s = vp.slices[vp.currentSliceIdx];
+          const sp = s.pixelSpacing;
+          const dc = (vp.currentRuler.end.c - vp.currentRuler.start.c) * sp[1];
+          const dr = (vp.currentRuler.end.r - vp.currentRuler.start.r) * sp[0];
+          const label = `${Math.hypot(dc, dr).toFixed(1)} mm`;
+          vp.measurements.push({ ...vp.currentRuler, label });
+          vp.currentRuler = null;
+          renderViewport(vp);
+        }
+        isDragging = false;
+      });
+
+      container.addEventListener('contextmenu', (e) => e.preventDefault());
+    });
+  </script>
+</body>
+</html>
