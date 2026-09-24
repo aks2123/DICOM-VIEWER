@@ -259,6 +259,9 @@
       <option value="brain">CT Brain</option>
     </select>
 
+    <!-- Invert Grayscale Button -->
+    <button id="btn-invert" class="btn" title="Toggle Grayscale Inversion (Positive/Negative)">🔄 Invert</button>
+
     <button id="btn-ref-lines" class="btn">📐 Ref Lines: ON</button>
     <button id="btn-anonymize" class="btn">🛡️ Anonymize: OFF</button>
     <button id="btn-cine" class="btn">▶ Cine</button>
@@ -279,7 +282,8 @@
         • Click a series above to load it.<br>
         • Wheel: Slice scroll.<br>
         • L-Drag: Active tool.<br>
-        • R-Drag: Pan.
+        • R-Drag: Pan.<br>
+        • 🔄 Invert: Toggle contrast.
       </div>
     </div>
 
@@ -336,13 +340,13 @@
 
   <script>
     // -------------------------------------------------------------
-    // CONFIGURE CORNERSTONE DECODERS (No Workers = No CORS errors)
+    // CONFIGURE CORNERSTONE DECODERS
     // -------------------------------------------------------------
     if (window.cornerstoneWADOImageLoader) {
       cornerstoneWADOImageLoader.external.cornerstone = cornerstone;
       cornerstoneWADOImageLoader.external.dicomParser = dicomParser;
       cornerstoneWADOImageLoader.configure({
-        useWebWorkers: false, // Critical: synchronous decode avoids file:/// origin restrictions
+        useWebWorkers: false,
         decodeConfig: { convertFloatPixelDataToInt: true }
       });
     }
@@ -374,6 +378,7 @@
       currentSliceIdx: 0,
       panX: 0, panY: 0, zoom: 1.0,
       windowWidth: 400, windowCenter: 40,
+      invertLut: false, // Invert state per window
       measurements: [],
       currentRuler: null,
       refLines: []
@@ -389,6 +394,14 @@
         document.getElementById(`tool-${t}`).classList.add('active');
       };
     });
+
+    // Invert Grayscale Toggle
+    document.getElementById('btn-invert').onclick = () => {
+      const vp = viewports[activeViewportIndex];
+      vp.invertLut = !vp.invertLut;
+      document.getElementById('btn-invert').classList.toggle('active', vp.invertLut);
+      renderViewport(vp);
+    };
 
     document.getElementById('btn-anonymize').onclick = () => {
       isAnonymized = !isAnonymized;
@@ -415,12 +428,14 @@
         viewports.forEach(vp => {
           vp.slices = [];
           vp.measurements = [];
+          vp.invertLut = false;
           vp.ctx.clearRect(0, 0, vp.canvas.width, vp.canvas.height);
           vp.el.querySelector('.viewport-header span').textContent = `Window ${vp.id + 1}: Empty`;
           vp.el.querySelector('.slice-counter').textContent = '0 / 0';
         });
         document.getElementById('series-list').innerHTML = '';
         document.getElementById('series-count').textContent = '0';
+        document.getElementById('btn-invert').classList.remove('active');
         document.getElementById('dropzone').classList.remove('hidden');
         logEl.textContent = "RAM purged. Ready for new files.";
       }
@@ -494,6 +509,7 @@
       vp.el.onclick = () => {
         activeViewportIndex = idx;
         viewports.forEach(v => v.el.classList.toggle('active', v.id === idx));
+        document.getElementById('btn-invert').classList.toggle('active', !!vp.invertLut);
       };
       vp.slider.oninput = (e) => {
         vp.currentSliceIdx = parseInt(e.target.value);
@@ -503,7 +519,7 @@
     });
 
     // -------------------------------------------------------------
-    // FILE HANDLING VIA CORNERSTONE COMPRESSED DECODER
+    // FILE HANDLING & AUTOMATIC MONOCHROME1 DETECTION
     // -------------------------------------------------------------
     document.getElementById('file-input').onchange = (e) => handleFiles(e.target.files);
     document.getElementById('folder-input').onchange = (e) => handleFiles(e.target.files);
@@ -526,10 +542,7 @@
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
         try {
-          // Register file with Cornerstone WADO Image Loader
           const imageId = cornerstoneWADOImageLoader.wadouri.fileManager.add(file);
-
-          // Decode image (uncompressed, JPEG Lossless, JPEG 2000, RLE)
           const image = await cornerstone.loadImage(imageId);
           const dataSet = image.data;
 
@@ -537,6 +550,10 @@
           const instNum = dataSet.intString('x00200013') || (i + 1);
           const ipp = dataSet.string('x00200032');
           const zPos = ipp ? parseFloat(ipp.split('\\')[2]) : instNum;
+
+          // Photometric Interpretation: "MONOCHROME1" vs "MONOCHROME2"
+          const photoInterp = (dataSet.string('x00280004') || "MONOCHROME2").trim();
+          const isMonochrome1 = (photoInterp === "MONOCHROME1");
 
           const dcmObj = {
             fileName: file.name,
@@ -546,6 +563,7 @@
             cols: image.columns,
             windowWidth: image.windowWidth || 400,
             windowCenter: image.windowCenter || 40,
+            isMonochrome1: isMonochrome1,
             pixelSpacing: image.rowPixelSpacing ? [image.rowPixelSpacing, image.columnPixelSpacing] : [1.0, 1.0],
             imagePosition: ipp ? ipp.split('\\').map(Number) : [0, 0, zPos],
             imageDirections: dataSet.string('x00200037') ? dataSet.string('x00200037').split('\\').map(Number) : [1, 0, 0, 0, 1, 0],
@@ -563,7 +581,7 @@
           successCount++;
 
           if (i === 0 || i % 10 === 0) {
-            log(`[Decoded] ${file.name} (${image.columns}x${image.rows})`);
+            log(`[Decoded] ${file.name} (${photoInterp})`);
           }
         } catch (err) {
           errorCount++;
@@ -580,14 +598,12 @@
 
       document.getElementById('dropzone').classList.add('hidden');
 
-      // Sort slices by Z position
       for (const k in seriesDict) {
         seriesDict[k].sort((a, b) => a.zPos - b.zPos);
       }
 
       updateSidebar();
 
-      // Load into viewports
       const keys = Object.keys(seriesDict);
       keys.slice(0, 4).forEach((k, idx) => {
         loadSeriesToViewport(viewports[idx], k);
@@ -620,6 +636,12 @@
       vp.slider.max = vp.slices.length - 1;
       vp.slider.value = 0;
 
+      // Auto-invert if MONOCHROME1 (standard radiograph)
+      vp.invertLut = !!vp.slices[0].isMonochrome1;
+      if (vp.id === activeViewportIndex) {
+        document.getElementById('btn-invert').classList.toggle('active', vp.invertLut);
+      }
+
       const desc = vp.slices[0].seriesDescription;
       vp.el.querySelector('.viewport-header span').textContent = `Window ${vp.id + 1}: ${desc}`;
       resetWindowLevel(vp);
@@ -635,7 +657,7 @@
     }
 
     // -------------------------------------------------------------
-    // RENDERING ENGINE
+    // RENDERING ENGINE (WITH INVERT SUPPORT)
     // -------------------------------------------------------------
     function renderViewport(vp) {
       if (!vp.slices.length) return;
@@ -662,6 +684,11 @@
         let norm = ((val - low) / rng) * 255;
         if (norm < 0) norm = 0;
         if (norm > 255) norm = 255;
+
+        // Apply Grayscale Inversion
+        if (vp.invertLut) {
+          norm = 255 - norm;
+        }
 
         const idx = i * 4;
         rgba[idx] = norm;
@@ -727,7 +754,7 @@
       vp.el.querySelector('.overlay-tl').innerHTML = `${patName}<br>ID: ${patId}`;
       vp.el.querySelector('.overlay-tr').innerHTML = `${s.modality}<br>${isAnonymized ? 'REDACTED' : s.studyDate}`;
       vp.el.querySelector('.overlay-bl').innerHTML = `Zoom: ${Math.round(vp.zoom * 100)}%<br>${s.cols}x${s.rows}`;
-      vp.el.querySelector('.overlay-br').innerHTML = `W: ${Math.round(vp.windowWidth)} C: ${Math.round(vp.windowCenter)}`;
+      vp.el.querySelector('.overlay-br').innerHTML = `W: ${Math.round(vp.windowWidth)} C: ${Math.round(vp.windowCenter)}${vp.invertLut ? ' (INV)' : ''}`;
     }
 
     // -------------------------------------------------------------
@@ -828,6 +855,7 @@
         startY = e.clientY;
         activeViewportIndex = vp.id;
         viewports.forEach(v => v.el.classList.toggle('active', v.id === vp.id));
+        document.getElementById('btn-invert').classList.toggle('active', !!vp.invertLut);
 
         if (activeTool === 'ruler') {
           const rect = vp.canvas.getBoundingClientRect();
